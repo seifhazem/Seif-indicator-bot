@@ -1,0 +1,82 @@
+import requests
+import time
+import pandas as pd
+import talib
+from datetime import datetime
+
+# بيانات البوت (استبدل القيم بما لديك)
+TELEGRAM_BOT_TOKEN = "ضع التوكن هنا"
+CHAT_ID = "ضع رقم الشات هنا"
+API_KEY = "ضع مفتاح AlphaVantage هنا"
+
+# أزواج العملات
+symbols = ["EURUSD", "GBPJPY", "AUDJPY"]  # أضف أي زوج آخر ترغب به
+
+def get_klines(symbol):
+    url = f'https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={symbol[:3]}&to_symbol={symbol[3:]}&interval=1min&apikey={API_KEY}&outputsize=compact'
+    r = requests.get(url)
+    data = r.json()
+    if "Time Series FX (1min)" not in data:
+        return None
+    ts = data["Time Series FX (1min)"]
+    df = pd.DataFrame.from_dict(ts, orient='index')
+    df = df.astype(float)
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    return df
+
+def calculate_indicators(df):
+    close = df['4. close'].values
+    high = df['2. high'].values
+    low = df['3. low'].values
+
+    ema = talib.EMA(close, timeperiod=50)[-1]
+    macd, macdsignal, _ = talib.MACD(close)
+    rsi = talib.RSI(close)[-1]
+    atr = talib.ATR(high, low, close)[-1]
+    upperband, middleband, lowerband = talib.BBANDS(close)
+
+    return {
+        "ema": ema,
+        "macd": macd[-1],
+        "macd_signal": macdsignal[-1],
+        "rsi": rsi,
+        "atr": atr,
+        "bb_upper": upperband[-1],
+        "bb_lower": lowerband[-1],
+        "close": close[-1]
+    }
+
+def evaluate_signals(ind):
+    conditions = [
+        ind["macd"] > ind["macd_signal"],
+        ind["close"] > ind["ema"],
+        ind["rsi"] < 30 or ind["rsi"] > 70,
+        ind["atr"] > 0.001,
+        ind["close"] <= ind["bb_lower"] or ind["close"] >= ind["bb_upper"]
+    ]
+    return sum(conditions) >= 3, sum(conditions)
+
+def send_signal(symbol, direction, valid_conditions):
+    time_now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    arrow = "📈" if direction == "BUY" else "📉"
+    msg = f"{arrow} *{symbol}*\nإشارة: *{direction}*\nتحققت {valid_conditions}/5 شروط\nالوقت: {time_now}"
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                  data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+
+def bot_loop():
+    while True:
+        for symbol in symbols:
+            df = get_klines(symbol)
+            if df is None:
+                continue
+            ind = calculate_indicators(df)
+            signal, count = evaluate_signals(ind)
+            if signal:
+                direction = "BUY" if ind["close"] > ind["ema"] else "SELL"
+                send_signal(symbol, direction, count)
+            time.sleep(3)
+        time.sleep(60)
+
+if __name__ == "__main__":
+    bot_loop()
